@@ -17,6 +17,10 @@ st.markdown("""
         padding: 15px;
         border-radius: 5px;
         margin-bottom: 20px;
+        color: #333333 !important;
+    }
+    .metric-box h3, .metric-box p, .metric-box span {
+        color: #333333 !important;
     }
     .stHeader { color: #2c3e50; }
 </style>
@@ -62,36 +66,83 @@ with st.sidebar:
         discretionary = st.number_input("General Discretionary ($)", 0.0, 10000.0, 450.0, 10.0)
         travel = st.number_input("Travel ($)", 0.0, 10000.0, 375.0, 10.0)
         buffer = st.number_input("Misc Buffer ($)", 0.0, 10000.0, 250.0, 10.0)
-        annual_spend_from_portfolio = st.number_input("Desired Extra Spending Goal ($/yr)", 0.0, 500000.0, 30000.0, 1000.0)
+        desired_extra_spending_monthly = st.number_input("Desired Extra Spending Goal ($/mo)", 0.0, 50000.0, 750.0, 10.0) # Changed to monthly, default / 12
 
     st.header("3. Income & Assets")
     with st.expander("Social Security"):
         you_ss_62 = st.number_input("Your SS @ 62 ($/mo)", 0.0, 10000.0, 2577.0, 10.0)
         you_ss_67 = st.number_input("Your SS @ 67 ($/mo)", 0.0, 10000.0, 3681.0, 10.0)
+        you_ss_70 = st.number_input("Your SS @ 70 ($/mo)", 0.0, 15000.0, float(3681.0 * 1.24), 10.0)
         spouse_spousal_benefit = st.number_input("Spousal Benefit ($/mo)", 0.0, 10000.0, float(3681 * 0.5), 10.0)
         spouse_claim_age_spouse = st.number_input("Spouse Claim Age", 62, 70, 67, 1)
-        primary_ss_plan = st.selectbox("Scenario Plan", ["Claim at 62", "Claim at 67"], index=1)
+        primary_ss_plan = st.selectbox("Scenario Plan", ["Claim at 62", "Claim at 67", "Claim at 70"], index=1)
 
     with st.expander("Portfolio Assumptions"):
         start_principal = st.number_input("Current Portfolio ($)", 0.0, 20000000.0, 800000.0, 1000.0)
-        # Tiers for the chart
-        tier1 = st.number_input("Chart Tier 1 ($)", 0.0, 10000000.0, 500000.0, 1000.0)
-        tier2 = st.number_input("Chart Tier 2 ($)", 0.0, 10000000.0, 750000.0, 1000.0)
-        tier3 = st.number_input("Chart Tier 3 ($)", 0.0, 10000000.0, 1750000.0, 1000.0)
-        withdraw_pct = st.slider("Chart Draw Rate (%)", 0.0, 10.0, 5.0, 0.1) / 100.0
+        withdraw_pct = st.slider("Safe Withdrawal Rate (%)", 0.0, 10.0, 4.0, 0.1, help="Annual % of initial portfolio value to withdraw.") / 100.0
         
     with st.expander("Taxes"):
         withdraw_tax_rate = st.slider("Portfolio Tax Rate (%)", 0.0, 50.0, 15.0, 0.5) / 100.0
         ss_taxable_pct = st.slider("SS Taxable Portion (%)", 0.0, 100.0, 85.0, 1.0) / 100.0
         ss_marginal_rate = st.slider("SS Marginal Tax (%)", 0.0, 50.0, 12.0, 0.5) / 100.0
 
-    st.header("4. Simulation")
+    st.header("4. Simulation Parameters")
+    stock_alloc = st.slider("Asset Allocation (% Stocks)", 0, 100, 75, 5, help="Remainder is assumed to be US 10Y Bonds.") / 100.0
     sims = st.slider("Simulations", 100, 5000, 1000, 100)
-    mean_ann = st.slider("Mean Return (%)", -5.0, 15.0, 7.0, 0.1) / 100.0
-    vol_ann = st.slider("Volatility (%)", 0.0, 50.0, 15.0, 0.5) / 100.0
     mc_seed_input = st.number_input("Random Seed", -1, 999999, 42, 1)
 
 # ---------------------- Logic: Calculation ----------------------
+@st.cache_data
+def load_historical_data():
+    try:
+        # Columns: Date,SP500,Dividend,Earnings,Consumer Price Index,Long Interest Rate,Real Price,Real Dividend,Real Earnings,PE10
+        df = pd.read_csv("market_data.csv")
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.sort_values("Date").reset_index(drop=True)
+        
+        # Calculate Monthly Returns
+        # Stock: (P_t + D_t/12) / P_{t-1} - 1
+        df["Stock_Price"] = df["SP500"]
+        df["Stock_Div"] = df["Dividend"]
+        
+        # Bond: Yield Income + Price Change (Duration approx 7)
+        # Yield is in %. Monthly Yield = Yield/1200.
+        # Price Change approx -Duration * Delta_Yield.
+        df["Bond_Yield"] = df["Long Interest Rate"]
+        duration = 7.0
+        
+        # Inflation: CPI_t / CPI_{t-1} - 1
+        df["CPI"] = df["Consumer Price Index"]
+        
+        # Vectorized calc
+        prev_price = df["Stock_Price"].shift(1)
+        prev_yield = df["Bond_Yield"].shift(1)
+        prev_cpi = df["CPI"].shift(1)
+        
+        # Stock Nominal Return
+        # Shiller Div is annualized.
+        df["Stock_Ret_Nom"] = (df["Stock_Price"] + df["Stock_Div"]/12.0) / prev_price - 1.0
+        
+        # Bond Nominal Return
+        # Yield change in decimal = (y_t - y_{t-1})/100
+        yield_change = (df["Bond_Yield"] - prev_yield) / 100.0
+        income = prev_yield / 1200.0
+        df["Bond_Ret_Nom"] = income - (duration * yield_change)
+        
+        # Inflation
+        df["Infl_Rate"] = df["CPI"] / prev_cpi - 1.0
+        
+        # Real Returns
+        df["Stock_Ret_Real"] = (1 + df["Stock_Ret_Nom"]) / (1 + df["Infl_Rate"]) - 1.0
+        df["Bond_Ret_Real"] = (1 + df["Bond_Ret_Nom"]) / (1 + df["Infl_Rate"]) - 1.0
+        
+        return df.dropna()
+    except Exception as e:
+        st.error(f"Error loading market data: {e}")
+        return None
+
+hist_data = load_historical_data()
+
 ages = np.arange(retire_age, horizon_age + 1)
 
 def blended(val, ratio):
@@ -168,7 +219,7 @@ exp_m = build_expenses_monthly()
 inflation_factors = (1 + infl) ** (ages - retire_age)
 
 # Add "Desired Extra Spending"
-exp_m["Desired Extra Spending"] = (annual_spend_from_portfolio / 12.0) * inflation_factors
+exp_m["Desired Extra Spending"] = desired_extra_spending_monthly * inflation_factors
 
 # ---------------------- SS Income ----------------------
 def ss_series(claim_age, base_val, sp_claim_age, sp_benefit):
@@ -190,15 +241,19 @@ def get_net_ss(gross_monthly):
 
 ss62_gross = ss_series(62, you_ss_62, spouse_claim_age_spouse, spouse_spousal_benefit)
 ss67_gross = ss_series(67, you_ss_67, spouse_claim_age_spouse, spouse_spousal_benefit)
+ss70_gross = ss_series(70, you_ss_70, spouse_claim_age_spouse, spouse_spousal_benefit)
 
 ss62_net, ss62_tax = get_net_ss(ss62_gross)
 ss67_net, ss67_tax = get_net_ss(ss67_gross)
+ss70_net, ss70_tax = get_net_ss(ss70_gross)
 
 # Active Scenario
 if primary_ss_plan == "Claim at 62":
     active_ss_net, active_ss_tax = ss62_net, ss62_tax
-else:
+elif primary_ss_plan == "Claim at 67":
     active_ss_net, active_ss_tax = ss67_net, ss67_tax
+else:
+    active_ss_net, active_ss_tax = ss70_net, ss70_tax
 
 # Taxes Calculation
 # Spending includes the "Desired Extra" so we are calculating tax needed to cover ALL desired spending
@@ -257,98 +312,98 @@ st.pyplot(fig1)
 
 
 # 2. Annual Comparison
-st.subheader("2. Can I afford it? (Annual Analysis)")
-st.markdown("Comparing your **Total Annual Spending Need** (including taxes & goals) vs. **Income Potential** (SS + Portfolio Draws).")
+st.subheader("2. Can I afford it? (SS Claiming Strategy Comparison)")
+st.markdown("Compare your cash flow sustainability under three different Social Security claiming ages: **62, 67, and 70**.")
 
 spend_annual = exp_grouped.sum(axis=1) * 12.0
-ss62_y = ss62_net * 12.0
-ss67_y = ss67_net * 12.0
+# Safe Draw
+safe_draw_annual = (start_principal * withdraw_pct) * inflation_factors
 
-tiers = [tier1, tier2, tier3]
-draws = np.array([t * withdraw_pct for t in tiers])
-l1, l2, l3 = draws[0], max(draws[1]-draws[0],0), max(draws[2]-draws[1],0)
+# Three Scenarios
+scenarios = [
+    ("Claim at 62", ss62_net * 12.0, "#1976d2"),
+    ("Claim at 67", ss67_net * 12.0, "#0d47a1"),
+    ("Claim at 70", ss70_net * 12.0, "#002171")
+]
 
-fig2, ax2 = plt.subplots(figsize=(12, 6))
-w = 0.25
+fig2, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
 x = np.arange(len(ages))
 
-# Spending Bar
-ax2.bar(x - w - 0.05, spend_annual, w, label="Total Spending Need", color="#607d8b", alpha=0.8)
-
-# Helper for stacking income
-def plot_stack(x_offset, ss_vals, label, color):
-    # SS Base
-    ax2.bar(x + x_offset, ss_vals, w, label=label, color=color, alpha=0.9)
-    # Layers
-    bot = ss_vals.copy()
-    ax2.bar(x + x_offset, np.full_like(bot, l1), w, bottom=bot, color="#ffb74d", label=f"Draw on ${tiers[0]/1e3:,.0f}k")
-    bot += l1
-    ax2.bar(x + x_offset, np.full_like(bot, l2), w, bottom=bot, color="#ff9800", label=f"+ to ${tiers[1]/1e3:,.0f}k")
-    bot += l2
-    ax2.bar(x + x_offset, np.full_like(bot, l3), w, bottom=bot, color="#f57c00", label=f"+ to ${tiers[2]/1e6:,.1f}M")
-
-plot_stack(0, ss62_y, "SS@62 Net", "#1976d2") # Blue
-plot_stack(w + 0.05, ss67_y, "SS@67 Net", "#0d47a1") # Dark Blue
-
-# MC Median Lines
-# We need to simulate monthly for accuracy
-def run_mc_draws(principal, years, sims, mean, vol, pct):
-    total_months = years * 12
-    # Simple vectorization
-    mu_m = (1 + mean)**(1/12) - 1
-    vol_m = vol / np.sqrt(12)
-    rng = np.random.default_rng(42) # fixed seed for consistency of lines
-    rets = rng.normal(mu_m, vol_m, (sims, total_months))
+for ax, (label, ss_vals, color) in zip(axes, scenarios):
+    # Income Stack
+    ax.bar(x, ss_vals, label="SS Income (Net)", color=color, alpha=0.9)
+    ax.bar(x, safe_draw_annual, bottom=ss_vals, label=f"Portfolio Draw ({withdraw_pct:.1%})", color="#4caf50", alpha=0.9)
     
-    balances = np.full(sims, principal)
-    annual_draws = np.zeros((sims, years))
-    target_monthly = (principal * pct) / 12.0
+    # Spending Line
+    ax.plot(x, spend_annual, color="#d32f2f", linewidth=3, label="Spending Need")
     
-    for m in range(total_months):
-        balances *= (1 + rets[:, m])
-        drawn = np.minimum(balances, target_monthly)
-        balances -= drawn
-        annual_draws[:, m//12] += drawn
-    return np.percentile(annual_draws, 50, axis=0)
+    # Shortfall
+    total_inc = ss_vals + safe_draw_annual
+    ax.fill_between(x, total_inc, spend_annual, where=(spend_annual > total_inc), 
+                    interpolate=True, color="red", alpha=0.15, hatch="///", label="Shortfall")
+    
+    ax.set_title(label, fontsize=14, fontweight="bold")
+    ax.set_xlabel("Age")
+    ax.set_xticks(x[::5])
+    ax.set_xticklabels(ages[::5])
+    ax.grid(axis="y", linestyle=":", alpha=0.4)
+    
+    if label == "Claim at 62":
+        ax.set_ylabel("Annual Amount ($)")
+        ax.legend(loc="upper left")
 
-y_len = len(ages)
-# Only run lines for non-hist simple normal for speed/clarity on this chart
-median_l1 = run_mc_draws(tier1, y_len, 500, mean_ann, vol_ann, withdraw_pct)
-median_l2 = run_mc_draws(tier2, y_len, 500, mean_ann, vol_ann, withdraw_pct)
-median_l3 = run_mc_draws(tier3, y_len, 500, mean_ann, vol_ann, withdraw_pct)
-
-ax2.plot(x, median_l1, color="#3e2723", lw=2, linestyle=":", label=f"Median Realized (${tiers[0]/1e3:,.0f}k)")
-ax2.plot(x, median_l2, color="#3e2723", lw=2, linestyle="--", label=f"Median Realized (${tiers[1]/1e3:,.0f}k)")
-ax2.plot(x, median_l3, color="#3e2723", lw=2, linestyle="-", label=f"Median Realized (${tiers[2]/1e6:,.1f}M)")
-
-ax2.set_xticks(x[::2])
-ax2.set_xticklabels(ages[::2])
-ax2.set_ylabel("Annual Amount ($)")
-ax2.set_xlabel("Age")
-
-# Dedupe legend
-hand, lab = ax2.get_legend_handles_labels()
-by_label = dict(zip(lab, hand))
-ax2.legend(by_label.values(), by_label.keys(), loc="upper left", bbox_to_anchor=(1, 1))
-ax2.grid(axis="y", linestyle=":", alpha=0.4)
 st.pyplot(fig2)
 
 
 # 3. Monte Carlo
 st.subheader("3. Will I run out? (Reliability)")
+st.markdown(f"Stress-testing your portfolio withdrawals based on the **{primary_ss_plan}** strategy selected in the sidebar.")
 
 # Run Full Simulation
 # Need Gross Withdrawals (Total Spend + Taxes - SS)
 gross_req_annual = np.maximum(0.0, total_spend_pre_tax + active_ss_tax - active_ss_net) * 12.0
 
-def run_full_mc(principal, req_annual, years, sims, mean, vol, seed):
+def run_full_mc(principal, req_annual, years, sims, stock_pct, seed):
     rng = np.random.default_rng(int(seed) if seed >= 0 else None)
     total_months = years * 12
-    mu_m = (1 + mean)**(1/12) - 1
-    vol_m = vol / np.sqrt(12)
     
-    # Monthly Returns
-    rets = rng.normal(mu_m, vol_m, (sims, total_months))
+    # 1. Construct Historical Weighted Real Returns
+    if hist_data is None:
+        return np.zeros((sims, total_months+1)), np.zeros(sims)
+        
+    # Mix
+    hist_real = hist_data["Stock_Ret_Real"].values * stock_pct + \
+                hist_data["Bond_Ret_Real"].values * (1 - stock_pct)
+    
+    n_hist = len(hist_real)
+    block_size = 12 # 1 year blocks to preserve seasonality/autocorrelation
+    
+    # 2. Block Bootstrap
+    # We need (sims, total_months)
+    # How many blocks?
+    n_blocks = int(np.ceil(total_months / block_size))
+    
+    # Random start indices for blocks
+    # Valid starts are 0 to n_hist - block_size
+    starts = rng.integers(0, n_hist - block_size + 1, size=(sims, n_blocks))
+    
+    # Construct paths
+    sim_returns = np.zeros((sims, n_blocks * block_size))
+    for i in range(sims):
+        # Stitch blocks
+        path = []
+        for start_idx in starts[i]:
+            path.append(hist_real[start_idx : start_idx + block_size])
+        sim_returns[i, :] = np.concatenate(path)
+        
+    # Trim to exact length
+    sim_returns = sim_returns[:, :total_months]
+    
+    # 3. Re-inflate with User's projected inflation
+    # (1 + Real) * (1 + UserInfl) - 1
+    # User infl is annual. Monthly = (1+infl)^(1/12) - 1
+    monthly_infl = (1 + infl) ** (1/12) - 1
+    sim_nominal = (1 + sim_returns) * (1 + monthly_infl) - 1
     
     # Monthly Req
     req_monthly = np.repeat(req_annual / 12.0, 12)[:total_months]
@@ -357,13 +412,12 @@ def run_full_mc(principal, req_annual, years, sims, mean, vol, seed):
     balances[:, 0] = principal
     
     for m in range(total_months):
-        balances[:, m+1] = (balances[:, m] * (1 + rets[:, m])) - req_monthly[m]
-        # Allow negative to track "magnitude of ruin", but for ruin check use <= 0
+        balances[:, m+1] = (balances[:, m] * (1 + sim_nominal[:, m])) - req_monthly[m]
     
     ruined = np.any(balances <= 0, axis=1)
     return balances, ruined
 
-mc_bals, mc_ruined = run_full_mc(start_principal, gross_req_annual.values, len(ages), sims, mean_ann, vol_ann, mc_seed_input)
+mc_bals, mc_ruined = run_full_mc(start_principal, gross_req_annual.values, len(ages), sims, stock_alloc, mc_seed_input)
 
 success_rate = 1.0 - mc_ruined.mean()
 median_end = np.median(mc_bals[:, -1])
@@ -391,26 +445,32 @@ with col2:
     </div>
     """, unsafe_allow_html=True)
 
-# Plot MC Paths
-fig3, ax3 = plt.subplots(figsize=(12, 5))
-# Plot sample paths (first 50)
-months = np.arange(mc_bals.shape[1]) / 12.0 + retire_age
-for i in range(min(50, sims)):
-    ax3.plot(months, mc_bals[i, :], color="gray", alpha=0.1)
+if mc_bals is not None:
+    months_total = mc_bals.shape[1]
+    x_months = np.arange(months_total) / 12.0 + retire_age
+    
+    p50 = np.percentile(mc_bals, 50, axis=0)
+    p10 = np.percentile(mc_bals, 10, axis=0)
+    p90 = np.percentile(mc_bals, 90, axis=0)
+    prob_ruin = mc_ruined.mean()
 
-# Plot percentiles
-p50 = np.percentile(mc_bals, 50, axis=0)
-p10 = np.percentile(mc_bals, 10, axis=0)
-p90 = np.percentile(mc_bals, 90, axis=0)
+    fig3, ax3 = plt.subplots(figsize=(20, 8))
+    # Plot sample paths (first 50)
+    for i in range(min(50, sims)):
+        ax3.plot(x_months, mc_bals[i, :], color="#aeb6bf", alpha=0.10) # Light grey for subtle background paths
 
-ax3.plot(months, p50, color="blue", linewidth=2, label="Median Path")
-ax3.fill_between(months, p10, p90, color="blue", alpha=0.1, label="10th-90th Percentile")
+    # Plot percentiles
+    ax3.plot(x_months, p50, color="#1565c0", linewidth=2.5, label="Median Path") # Distinct dark blue
+    ax3.fill_between(x_months, p10, p90, color="#1565c0", alpha=0.15, label="10th-90th Percentile") # Light blue fill
 
-ax3.axhline(0, color="red", linestyle="--", linewidth=1)
-ax3.set_ylim(bottom= -start_principal * 0.2, top=np.percentile(mc_bals, 95)) # Zoom in a bit
-ax3.set_ylabel("Portfolio Balance ($)")
-ax3.set_xlabel("Age")
-ax3.legend(loc="upper left")
-st.pyplot(fig3)
-
-st.caption(f"Simulation based on {sims} runs. Assumes {primary_ss_plan} and nominal returns ~{mean_ann:.1%}, vol ~{vol_ann:.1%}.")
+    ax3.axhline(0, color="#b71c1c", linestyle="--", linewidth=1.8) # Darker, thicker red for zero line
+    ax3.set_ylim(bottom= -start_principal * 0.2, top=np.percentile(mc_bals, 95)) # Zoom in a bit
+    ax3.ticklabel_format(style='plain', axis='y', useOffset=False) # Remove scientific notation
+    ax3.set_ylabel("Portfolio Balance ($)")
+    ax3.set_xlabel("Age")
+    ax3.set_title(f"Monte Carlo Simulation: {primary_ss_plan} (Success Rate: {success_rate:.1%})")
+    ax3.legend(loc="upper left")
+    st.pyplot(fig3, use_container_width=True)
+    
+st.caption(f"Simulation based on {sims} runs using **Historical Block Bootstrap** (sampling 1-year blocks from Shiller data 1871-Present).")
+st.caption("This method captures historical volatility clustering and crashes (e.g., 1929, 2008) better than a simple bell curve.")
