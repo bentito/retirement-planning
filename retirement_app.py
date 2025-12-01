@@ -300,13 +300,36 @@ exp_grouped["Flexible Spending"] = exp_m[["Discretionary", "Travel"]].sum(axis=1
 exp_grouped["Taxes"] = exp_m["Estimated Taxes"]
 # ---------------------- VISUALIZATION ----------------------
 
+# Global Scenario Selector
+st.markdown("---")
+st.header("Analysis Dashboard")
+analysis_scenario = st.radio(
+    "Select Social Security Strategy to Analyze:",
+    ["Claim at 62", "Claim at 67", "Claim at 70"],
+    horizontal=True,
+    index=1
+)
+
+# Determine Active Data based on Selection
+if analysis_scenario == "Claim at 62":
+    current_ss_net = ss62_net
+    current_ss_tax = ss62_tax
+    current_color = "#1976d2"
+elif analysis_scenario == "Claim at 67":
+    current_ss_net = ss67_net
+    current_ss_tax = ss67_tax
+    current_color = "#0d47a1"
+else:
+    current_ss_net = ss70_net
+    current_ss_tax = ss70_tax
+    current_color = "#002171"
+
 # 1. Monthly Expenses
-st.subheader("1. Where does the money go? (Monthly Expenses)")
-st.markdown("Breakdown of your projected monthly cash outflow. **Taxes are a mandatory expense.** 'Flexible Spending' includes your Desired Extra Spending goal.")
+st.subheader("1. Monthly Cash Flow Breakdown")
+st.markdown("Your projected monthly expenses vs. spending needs.")
 
 fig1, ax1 = plt.subplots(figsize=(12, 6))
 groups = ["Housing", "Healthcare", "Food", "Utilities", "Transportation", "Insurance", "Taxes", "Flexible Spending"]
-# Palette: Housing (Indigo), Healthcare (Red), Food (Green), Utilities (Light Green), Trans (Lime), Ins (Teal), Taxes (Blue Gray), Flex (Orange)
 colors = ["#3f51b5", "#f44336", "#2e7d32", "#4caf50", "#8bc34a", "#009688", "#607d8b", "#ff9800"]
 bottom = np.zeros(len(ages))
 
@@ -321,16 +344,14 @@ ax1.legend(loc="upper left", bbox_to_anchor=(1, 1))
 ax1.grid(axis="y", linestyle=":", alpha=0.3)
 st.pyplot(fig1)
 
+
 # 2. Annual Comparison
-st.subheader("2. Can I afford it? (Annual Cash Flow)")
-st.markdown("Compare your cash flow sustainability under three different Social Security claiming ages: **Each tab recalculates taxes and gaps based on that specific claim age.**")
+st.subheader("2. Annual Income vs. Spending")
+st.markdown(f"**Scenario: {analysis_scenario}**")
 
-tab62, tab67, tab70 = st.tabs(["Claim at 62", "Claim at 67", "Claim at 70"])
-
-# Helper to recalc taxes and spending for a specific scenario
+# Helper to recalc taxes and spending for the selected scenario
 def get_scenario_annuals(ss_net_m, ss_tax_m):
     # Recalculate taxes based on this specific SS stream
-    # Shortfall = Spend_Pre_Tax + SS_Tax - SS_Net
     local_shortfall = np.maximum(0.0, total_spend_pre_tax + ss_tax_m - ss_net_m)
     
     if withdraw_tax_rate >= 1.0:
@@ -345,57 +366,39 @@ def get_scenario_annuals(ss_net_m, ss_tax_m):
     local_spend_need = (total_spend_pre_tax + local_total_tax) * 12.0
     return local_spend_need
 
-# Plotting Helper
-def plot_scenario(ax, ss_net_m, spending_need_y, color, title):
-    x = np.arange(len(ages))
-    ss_inc_y = ss_net_m * 12.0
-    
-    # Income Stack
-    ax.bar(x, ss_inc_y, label="SS Income (Net)", color=color, alpha=0.9, width=0.6)
-    ax.bar(x, safe_draw_annual, bottom=ss_inc_y, label=f"Portfolio Draw ({withdraw_pct:.1%})", color="#4caf50", alpha=0.9, width=0.6)
-    
-    # Spending Line
-    ax.plot(x, spending_need_y, color="#d32f2f", linewidth=3, marker="o", markersize=4, label="Total Spending Need (w/ Tax)")
-    
-    # Shortfall Fill
-    total_inc = ss_inc_y + safe_draw_annual
-    ax.fill_between(x, total_inc, spending_need_y, where=(spending_need_y > total_inc), 
-                    interpolate=True, color="red", alpha=0.15, hatch="///", label="Shortfall")
-    
-    ax.set_title(title, fontsize=14, fontweight="bold")
-    ax.set_xlabel("Age")
-    ax.set_ylabel("Annual Amount ($)")
-    ax.set_xticks(x[::2])
-    ax.set_xticklabels(ages[::2])
-    ax.grid(axis="y", linestyle=":", alpha=0.4)
-    ax.legend(loc="upper left")
-
-# Safe Draw (Annual)
+# Calculate specifics for current selection
+spend_annual_current = get_scenario_annuals(current_ss_net, current_ss_tax)
 safe_draw_annual = (start_principal * withdraw_pct) * inflation_factors
+ss_inc_y = current_ss_net * 12.0
 
-# Tab Content
-with tab62:
-    spend_62 = get_scenario_annuals(ss62_net, ss62_tax)
-    fig_62, ax_62 = plt.subplots(figsize=(14, 6))
-    plot_scenario(ax_62, ss62_net, spend_62, "#1976d2", "Scenario: Claim Social Security at 62")
-    st.pyplot(fig_62)
+fig2, ax2 = plt.subplots(figsize=(14, 6))
+x = np.arange(len(ages))
 
-with tab67:
-    spend_67 = get_scenario_annuals(ss67_net, ss67_tax)
-    fig_67, ax_67 = plt.subplots(figsize=(14, 6))
-    plot_scenario(ax_67, ss67_net, spend_67, "#0d47a1", "Scenario: Claim Social Security at 67")
-    st.pyplot(fig_67)
+# Income Stack
+ax2.bar(x, ss_inc_y, label="SS Income (Net)", color=current_color, alpha=0.9, width=0.6)
+ax2.bar(x, safe_draw_annual, bottom=ss_inc_y, label=f"Portfolio Draw ({withdraw_pct:.1%})", color="#4caf50", alpha=0.9, width=0.6)
 
-with tab70:
-    spend_70 = get_scenario_annuals(ss70_net, ss70_tax)
-    fig_70, ax_70 = plt.subplots(figsize=(14, 6))
-    plot_scenario(ax_70, ss70_net, spend_70, "#002171", "Scenario: Claim Social Security at 70")
-    st.pyplot(fig_70)
+# Spending Line
+ax2.plot(x, spend_annual_current, color="#d32f2f", linewidth=3, marker="o", markersize=4, label="Total Spending Need (w/ Tax)")
+
+# Shortfall Fill
+total_inc = ss_inc_y + safe_draw_annual
+ax2.fill_between(x, total_inc, spend_annual_current, where=(spend_annual_current > total_inc), 
+                interpolate=True, color="red", alpha=0.15, hatch="///", label="Shortfall")
+
+ax2.set_title(f"Cash Flow Projection: {analysis_scenario}", fontsize=14, fontweight="bold")
+ax2.set_xlabel("Age")
+ax2.set_ylabel("Annual Amount ($)")
+ax2.set_xticks(x[::2])
+ax2.set_xticklabels(ages[::2])
+ax2.grid(axis="y", linestyle=":", alpha=0.4)
+ax2.legend(loc="upper left")
+st.pyplot(fig2)
 
 
 # 3. Monte Carlo
-st.subheader("3. Will I run out? (Reliability)")
-st.markdown("Stress-testing your portfolio withdrawals using **Historical Block Bootstrap**. This simulation samples actual market history (1871–Present) to capture volatility clustering and crashes.")
+st.subheader("3. Portfolio Reliability (Monte Carlo)")
+st.markdown(f"Stress-testing: **{analysis_scenario}** using historical market data (1871–Present).")
 
 # Run Full Simulation Logic
 def run_full_mc(principal, req_annual, years, sims, stock_pct, seed):
@@ -451,73 +454,61 @@ def get_gross_req(ss_net, ss_tax):
         gross = np.where(shortfall > 0, shortfall / (1 - withdraw_tax_rate), 0.0)
     return gross * 12.0
 
-# Tabs
-mc_tab62, mc_tab67, mc_tab70 = st.tabs(["Claim at 62", "Claim at 67", "Claim at 70"])
+# Run MC for Selected Scenario
+gross_req = get_gross_req(current_ss_net, current_ss_tax)
+mc_bals, mc_ruined = run_full_mc(start_principal, gross_req, len(ages), sims, stock_alloc, mc_seed_input)
 
-def display_mc_tab(ss_net, ss_tax, label, median_color="#1565c0"):
-    gross_req = get_gross_req(ss_net, ss_tax)
-    mc_bals, mc_ruined = run_full_mc(start_principal, gross_req, len(ages), sims, stock_alloc, mc_seed_input)
+success_rate = 1.0 - mc_ruined.mean()
+median_end = np.median(mc_bals[:, -1])
+median_end_str = f"${median_end:,.0f}" if median_end > 0 else "$0 (Depleted)"
+
+col1, col2 = st.columns(2)
+with col1:
+    st.markdown(f"""
+    <div class="metric-box">
+        <h3>Success Rate</h3>
+        <span class="big-font" style="color: {'green' if success_rate > 0.8 else 'red'}">
+            {success_rate:.1%}
+        </span>
+        <p>Likelihood portfolio lasts to age {horizon_age}.</p>
+    </div>
+    """, unsafe_allow_html=True)
+with col2:
+    st.markdown(f"""
+    <div class="metric-box">
+        <h3>Median Ending Balance</h3>
+        <span class="big-font">
+            {median_end_str}
+        </span>
+        <p>Expected nominal wealth at age {horizon_age}.</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+if mc_bals is not None:
+    months_total = mc_bals.shape[1]
+    x_months = np.arange(months_total) / 12.0 + retire_age
     
-    success_rate = 1.0 - mc_ruined.mean()
-    median_end = np.median(mc_bals[:, -1])
-    median_end_str = f"${median_end:,.0f}" if median_end > 0 else "$0 (Depleted)"
+    p50 = np.percentile(mc_bals, 50, axis=0)
+    p10 = np.percentile(mc_bals, 10, axis=0)
+    p90 = np.percentile(mc_bals, 90, axis=0)
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.markdown(f"""
-        <div class="metric-box">
-            <h3>Success Rate</h3>
-            <span class="big-font" style="color: {'green' if success_rate > 0.8 else 'red'}">
-                {success_rate:.1%}
-            </span>
-            <p>Likelihood portfolio lasts to age {horizon_age}.</p>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
-        st.markdown(f"""
-        <div class="metric-box">
-            <h3>Median Ending Balance</h3>
-            <span class="big-font">
-                {median_end_str}
-            </span>
-            <p>Expected nominal wealth at age {horizon_age}.</p>
-        </div>
-        """, unsafe_allow_html=True)
+    fig3, ax3 = plt.subplots(figsize=(20, 8))
+    # Plot sample paths
+    for i in range(min(50, sims)):
+        ax3.plot(x_months, mc_bals[i, :], color="#aeb6bf", alpha=0.10)
 
-    if mc_bals is not None:
-        months_total = mc_bals.shape[1]
-        x_months = np.arange(months_total) / 12.0 + retire_age
-        
-        p50 = np.percentile(mc_bals, 50, axis=0)
-        p10 = np.percentile(mc_bals, 10, axis=0)
-        p90 = np.percentile(mc_bals, 90, axis=0)
+    # Plot percentiles
+    ax3.plot(x_months, p50, color=current_color, linewidth=2.5, label="Median Path")
+    ax3.fill_between(x_months, p10, p90, color=current_color, alpha=0.15, label="10th-90th Percentile")
 
-        fig, ax = plt.subplots(figsize=(20, 8))
-        # Plot sample paths
-        for i in range(min(50, sims)):
-            ax.plot(x_months, mc_bals[i, :], color="#aeb6bf", alpha=0.10)
+    ax3.axhline(0, color="#b71c1c", linestyle="--", linewidth=1.8)
+    ax3.set_ylim(bottom= -start_principal * 0.2, top=np.percentile(mc_bals, 95))
+    ax3.ticklabel_format(style='plain', axis='y', useOffset=False)
+    ax3.set_ylabel("Portfolio Balance ($)")
+    ax3.set_xlabel("Age")
+    ax3.set_title(f"Simulation: {analysis_scenario} (Success: {success_rate:.1%})")
+    ax3.legend(loc="upper left")
+    st.pyplot(fig3, use_container_width=True)
 
-        # Plot percentiles
-        ax.plot(x_months, p50, color=median_color, linewidth=2.5, label="Median Path")
-        ax.fill_between(x_months, p10, p90, color=median_color, alpha=0.15, label="10th-90th Percentile")
-
-        ax.axhline(0, color="#b71c1c", linestyle="--", linewidth=1.8)
-        ax.set_ylim(bottom= -start_principal * 0.2, top=np.percentile(mc_bals, 95))
-        ax.ticklabel_format(style='plain', axis='y', useOffset=False)
-        ax.set_ylabel("Portfolio Balance ($)")
-        ax.set_xlabel("Age")
-        ax.set_title(f"Simulation: {label} (Success: {success_rate:.1%})")
-        ax.legend(loc="upper left")
-        st.pyplot(fig, use_container_width=True)
-
-with mc_tab62:
-    display_mc_tab(ss62_net, ss62_tax, "Claim at 62", "#1976d2")
-
-with mc_tab67:
-    display_mc_tab(ss67_net, ss67_tax, "Claim at 67", "#0d47a1")
-
-with mc_tab70:
-    display_mc_tab(ss70_net, ss70_tax, "Claim at 70", "#002171")
-    
 st.caption(f"Simulation based on {sims} runs using **Historical Block Bootstrap** (sampling 1-year blocks from Shiller data 1871-Present).")
 st.caption("This method captures historical volatility clustering and crashes (e.g., 1929, 2008) better than a simple bell curve.")
