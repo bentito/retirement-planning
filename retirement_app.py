@@ -315,16 +315,11 @@ for col, color in zip(groups, colors):
     ax1.bar(ages, vals, bottom=bottom, label=col, color=color, alpha=0.9, width=0.8)
     bottom += vals
 
-# Add income lines overlay
-ax1.plot(ages, ss62_net.values, color="black", linestyle="-", linewidth=2, label="SS@62 (Net)")
-ax1.plot(ages, ss67_net.values, color="black", linestyle="--", linewidth=2, label="SS@67 (Net)")
-
 ax1.set_xlabel("Age")
 ax1.set_ylabel("Monthly ($)")
 ax1.legend(loc="upper left", bbox_to_anchor=(1, 1))
 ax1.grid(axis="y", linestyle=":", alpha=0.3)
 st.pyplot(fig1)
-
 
 # 2. Annual Comparison
 st.subheader("2. Can I afford it? (Annual Cash Flow)")
