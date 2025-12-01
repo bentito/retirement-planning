@@ -45,11 +45,12 @@ with st.sidebar:
         property_tax = st.number_input("Property Tax ($/mo)", 0.0, 5000.0, 500.0, 10.0)
         house_maintenance = st.number_input("Maintenance ($/mo)", 0.0, 5000.0, 250.0, 10.0)
         
-        st.caption("Thailand / Rent Option")
-        thailand_half = st.checkbox("Spend 6mo/yr in Thailand", value=False)
-        thai_ratio = st.slider("Thailand Cost Ratio vs US", 0.2, 1.0, 0.45, 0.05) if thailand_half else 1.0
-        rent_monthly = st.number_input("Local Rent if renting ($/mo)", 0.0, 10000.0, 2000.0, 50.0) if thailand_half else 0.0
-        rent_grows_with_cola = st.checkbox("Rent grows w/ COLA", value=True) if thailand_half else False
+        st.caption("International Living / Snowbirding")
+        months_abroad = st.slider("Months Abroad per Year", 0, 12, 0, 1)
+        thai_ratio = st.slider("Abroad Cost Ratio vs US", 0.2, 1.0, 0.45, 0.05) if months_abroad > 0 else 1.0
+        rent_monthly = st.number_input("Rent Cost Abroad ($/mo)", 0.0, 10000.0, 2000.0, 50.0) if months_abroad > 0 else 0.0
+        rental_income_home = st.number_input("Rental Income from US Home ($/mo while away)", 0.0, 10000.0, 0.0, 100.0) if months_abroad > 0 else 0.0
+        rent_grows_with_cola = st.checkbox("Rent grows w/ COLA", value=True) if months_abroad > 0 else False
 
     with st.expander("Living Essentials (Food, Util, Trans)"):
         food = st.number_input("Food ($)", 0.0, 5000.0, 1000.0, 10.0)
@@ -63,10 +64,8 @@ with st.sidebar:
         med_oop_real_escalation = st.slider("Med Costs Real Growth (%)", 0.0, 10.0, 3.0, 0.1) / 100.0
 
     with st.expander("Discretionary & Goals"):
-        discretionary = st.number_input("General Discretionary ($)", 0.0, 10000.0, 450.0, 10.0)
+        discretionary = st.number_input("Discretionary & Buffer ($/mo)", 0.0, 50000.0, 1000.0, 100.0, help="Combined monthly budget for non-essentials, travel, hobbies, and extra goals.")
         travel = st.number_input("Travel ($)", 0.0, 10000.0, 375.0, 10.0)
-        buffer = st.number_input("Misc Buffer ($)", 0.0, 10000.0, 250.0, 10.0)
-        desired_extra_spending_monthly = st.number_input("Desired Extra Spending Goal ($/mo)", 0.0, 50000.0, 750.0, 10.0) # Changed to monthly, default / 12
 
     st.header("3. Income & Assets")
     with st.expander("Social Security"):
@@ -145,9 +144,6 @@ hist_data = load_historical_data()
 
 ages = np.arange(retire_age, horizon_age + 1)
 
-def blended(val, ratio):
-    return val * (0.5 + 0.5 * ratio)
-
 def escalating_series_initial(total, r, years):
     if r == 0: return total / years
     return total * r / ((1 + r) ** years - 1)
@@ -155,12 +151,17 @@ def escalating_series_initial(total, r, years):
 def build_expenses_monthly():
     # Base columns
     cols = [
-        "Mortgage", "Property Tax", "Rent", "House Maint", # Housing
+        "Mortgage", "Property Tax", "Rent Abroad", "House Maint", "Rental Income Credit", # Housing
         "Food", "Utilities", "Transportation", "Insurance Other", # Essentials
         "Discretionary", "Travel", "Buffer", # Discretionary
         "HDHP (You)", "HDHP (Spouse)", "Medicare OOP (You)", "Medicare OOP (Spouse)" # Health
     ]
     df = pd.DataFrame(0.0, index=ages, columns=cols)
+    
+    abroad_frac = months_abroad / 12.0
+    # Weighted average cost factor for variable expenses
+    # (Months Home * 1.0 + Months Abroad * Ratio) / 12
+    blend_factor = (1.0 - abroad_frac) + (abroad_frac * thai_ratio)
     
     # Calculate costs per year
     for a in ages:
@@ -172,21 +173,25 @@ def build_expenses_monthly():
         df.loc[a, "Property Tax"] = property_tax * f
         df.loc[a, "House Maint"] = house_maintenance * f
         
-        ratio = thai_ratio if thailand_half else 1.0
-        rent_factor = 0.5 if thailand_half else 0.0
         rent_growth = f if rent_grows_with_cola else 1.0
-        df.loc[a, "Rent"] = rent_monthly * rent_factor * rent_growth
+        # Rent expense (only incurred for months abroad)
+        df.loc[a, "Rent Abroad"] = rent_monthly * abroad_frac * rent_growth
         
-        # Essentials
-        df.loc[a, "Food"] = (blended(food, ratio) if thailand_half else food) * f
-        df.loc[a, "Utilities"] = (blended(utilities, ratio) if thailand_half else utilities) * f
-        df.loc[a, "Transportation"] = (blended(transportation, ratio) if thailand_half else transportation) * f
-        df.loc[a, "Insurance Other"] = (blended(insurance_other, ratio) if thailand_half else insurance_other) * f
+        # Rental Income (only earned for months abroad) - grows with inflation
+        # We store as positive value here, subtract later
+        df.loc[a, "Rental Income Credit"] = rental_income_home * abroad_frac * f
         
-        # Discretionary
-        df.loc[a, "Discretionary"] = (blended(discretionary, ratio) if thailand_half else discretionary) * f
+        # Essentials (Blended)
+        df.loc[a, "Food"] = food * blend_factor * f
+        df.loc[a, "Utilities"] = utilities * blend_factor * f
+        df.loc[a, "Transportation"] = transportation * blend_factor * f
+        df.loc[a, "Insurance Other"] = insurance_other * blend_factor * f
+        
+        # Discretionary (Blended)
+        df.loc[a, "Discretionary"] = discretionary * blend_factor * f
+        
+        # Travel (Not blended, assumed fully applicable)
         df.loc[a, "Travel"] = travel * f
-        df.loc[a, "Buffer"] = buffer * f
         
         # Healthcare (HDHP)
         df.loc[a, "HDHP (You)"] = (hdhp_annual / 12 * f) if a < 65 else 0.0
@@ -218,10 +223,7 @@ def build_expenses_monthly():
 exp_m = build_expenses_monthly()
 inflation_factors = (1 + infl) ** (ages - retire_age)
 
-# Add "Desired Extra Spending"
-exp_m["Desired Extra Spending"] = desired_extra_spending_monthly * inflation_factors
-
-# ---------------------- SS Income ----------------------
+    # ---------------------- SS Income ----------------------
 def ss_series(claim_age, base_val, sp_claim_age, sp_benefit):
     out = pd.Series(0.0, index=ages)
     # You
@@ -257,7 +259,10 @@ else:
 
 # Taxes Calculation
 # Spending includes the "Desired Extra" so we are calculating tax needed to cover ALL desired spending
-total_spend_pre_tax = exp_m.sum(axis=1)
+# NOTE: We must subtract Rental Income Credit, not add it.
+expenses_only = exp_m.drop(columns=["Rental Income Credit"])
+total_spend_pre_tax = expenses_only.sum(axis=1) - exp_m["Rental Income Credit"]
+
 # Monthly tax needs
 shortfall_monthly = np.maximum(0.0, total_spend_pre_tax + active_ss_tax - active_ss_net)
 
@@ -272,7 +277,18 @@ exp_m["Estimated Taxes"] = active_ss_tax + withdraw_tax
 # ---------------------- Grouping for Display ----------------------
 # Create a cleaner dataframe for plotting
 exp_grouped = pd.DataFrame(index=ages)
-exp_grouped["Housing"] = exp_m[["Mortgage", "Property Tax", "Rent", "House Maint"]].sum(axis=1)
+# Housing = Mortgage + Tax + Rent Abroad + Maint - Rental Income
+exp_grouped["Housing"] = (exp_m["Mortgage"] + exp_m["Property Tax"] + 
+                          exp_m["Rent Abroad"] + exp_m["House Maint"] - 
+                          exp_m["Rental Income Credit"])
+# Ensure housing expense doesn't go below zero if income is high? 
+# Usually we want net cash flow. If negative, it effectively subsidizes other costs.
+# But for a stacked bar chart of "Where money goes", a negative bar is weird.
+# Let's floor it at zero for the visual bar, OR allow it to reduce the stack height naturally if the plotting library supports it.
+# Matplotlib bar bottoms are simpler if positive.
+# Let's keep it simple: Net Housing Cost.
+exp_grouped["Housing"] = exp_grouped["Housing"].apply(lambda x: max(0.0, x))
+
 exp_grouped["Healthcare"] = exp_m[["HDHP (You)", "HDHP (Spouse)", "Medicare OOP (You)", "Medicare OOP (Spouse)"]].sum(axis=1)
 # Breakdown of Essentials
 exp_grouped["Food"] = exp_m["Food"]
@@ -280,9 +296,8 @@ exp_grouped["Utilities"] = exp_m["Utilities"]
 exp_grouped["Transportation"] = exp_m["Transportation"]
 exp_grouped["Insurance"] = exp_m["Insurance Other"]
 
-exp_grouped["Flexible Spending"] = exp_m[["Discretionary", "Travel", "Buffer", "Desired Extra Spending"]].sum(axis=1)
+exp_grouped["Flexible Spending"] = exp_m[["Discretionary", "Travel"]].sum(axis=1)
 exp_grouped["Taxes"] = exp_m["Estimated Taxes"]
-
 # ---------------------- VISUALIZATION ----------------------
 
 # 1. Monthly Expenses
